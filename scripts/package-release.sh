@@ -50,8 +50,14 @@ if [[ "$BIN_NAME" == "favorsd.exe" ]]; then
   if command -v zip >/dev/null 2>&1; then
     (cd "$ROOT/dist/packages" && zip -qr "$ARCHIVE_DIR/favors-$TARGET.zip" "favors-$TARGET")
   elif command -v powershell.exe >/dev/null 2>&1; then
+    stage_path="$STAGE"
+    archive_path="$ARCHIVE_DIR/favors-$TARGET.zip"
+    if command -v cygpath >/dev/null 2>&1; then
+      stage_path="$(cygpath -w "$stage_path")"
+      archive_path="$(cygpath -w "$archive_path")"
+    fi
     powershell.exe -NoProfile -Command \
-      "Compress-Archive -Path '$STAGE' -DestinationPath '$ARCHIVE_DIR/favors-$TARGET.zip' -Force"
+      "Compress-Archive -Path '$stage_path' -DestinationPath '$archive_path' -Force"
   else
     echo "Missing zip or PowerShell Compress-Archive"
     exit 1
