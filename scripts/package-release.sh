@@ -11,7 +11,11 @@ case "$TARGET" in
   *) BIN_NAME="favorsd" ;;
 esac
 
-BIN_SRC="$ROOT/apps/daemon/target/release/$BIN_NAME"
+if [[ -n "${FAVORS_RUST_TARGET:-}" ]]; then
+  BIN_SRC="$ROOT/apps/daemon/target/$FAVORS_RUST_TARGET/release/$BIN_NAME"
+else
+  BIN_SRC="$ROOT/apps/daemon/target/release/$BIN_NAME"
+fi
 if [[ ! -x "$BIN_SRC" && ! -f "$BIN_SRC" ]]; then
   echo "Missing $BIN_SRC"
   echo "Run: npm run build"

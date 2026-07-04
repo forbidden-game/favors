@@ -18,15 +18,19 @@ jobs:
           - os: ubuntu-latest
             target: linux-x64
             artifact: favors-linux-x64.tar.gz
-          - os: macos-13
+            rust_target: ""
+          - os: macos-14
             target: macos-x64
             artifact: favors-macos-x64.tar.gz
+            rust_target: x86_64-apple-darwin
           - os: macos-14
             target: macos-arm64
             artifact: favors-macos-arm64.tar.gz
+            rust_target: ""
           - os: windows-latest
             target: windows-x64
             artifact: favors-windows-x64.zip
+            rust_target: ""
 
     runs-on: ${{ matrix.os }}
 
@@ -42,9 +46,20 @@ jobs:
 
       - run: npm ci
 
-      - run: npm run build
+      - run: npm run build:web
 
       - shell: bash
+        run: |
+          if [[ -n "${{ matrix.rust_target }}" ]]; then
+            rustup target add "${{ matrix.rust_target }}"
+            cargo build --release --manifest-path apps/daemon/Cargo.toml --target "${{ matrix.rust_target }}"
+          else
+            cargo build --release --manifest-path apps/daemon/Cargo.toml
+          fi
+
+      - shell: bash
+        env:
+          FAVORS_RUST_TARGET: ${{ matrix.rust_target }}
         run: scripts/package-release.sh "${{ matrix.target }}"
 
       - uses: actions/upload-artifact@v4
