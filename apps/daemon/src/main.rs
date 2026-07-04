@@ -11,6 +11,7 @@ use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
 use std::os::fd::{FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -313,20 +314,23 @@ fn default_web_dir(root: &Path) -> PathBuf {
 }
 
 fn listener() -> AppResult<(TcpListener, bool)> {
-    let listen_fds = env::var("LISTEN_FDS")
-        .ok()
-        .and_then(|value| value.parse::<i32>().ok())
-        .unwrap_or(0);
-    let listen_pid = env::var("LISTEN_PID")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok());
-    let pid_matches = listen_pid
-        .map(|pid| pid == std::process::id())
-        .unwrap_or(true);
+    #[cfg(unix)]
+    {
+        let listen_fds = env::var("LISTEN_FDS")
+            .ok()
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or(0);
+        let listen_pid = env::var("LISTEN_PID")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok());
+        let pid_matches = listen_pid
+            .map(|pid| pid == std::process::id())
+            .unwrap_or(true);
 
-    if listen_fds > 0 && pid_matches {
-        let listener = unsafe { TcpListener::from_raw_fd(3 as RawFd) };
-        return Ok((listener, true));
+        if listen_fds > 0 && pid_matches {
+            let listener = unsafe { TcpListener::from_raw_fd(3 as RawFd) };
+            return Ok((listener, true));
+        }
     }
 
     let addr = env::var("FAVORS_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
