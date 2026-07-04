@@ -1,5 +1,8 @@
+use html_escape::decode_html_entities;
 use percent_encoding::percent_decode_str;
+use readability::{extract as extract_readable, ExtractOptions};
 use rusqlite::{params, Connection, OptionalExtension};
+use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -10,7 +13,6 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::fd::{FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -18,6 +20,8 @@ use url::{form_urlencoded, Url};
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8123";
 const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
+const USER_AGENT: &str =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126 Safari/537.36 Favors/0.1";
 
 type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -28,7 +32,6 @@ struct App {
     item_dir: PathBuf,
     asset_dir: PathBuf,
     web_dir: PathBuf,
-    extractor: PathBuf,
     socket_activated: bool,
 }
 
@@ -115,16 +118,18 @@ impl App {
     fn new(socket_activated: bool) -> AppResult<Self> {
         let root = env::var("FAVORS_ROOT")
             .map(PathBuf::from)
-            .unwrap_or(env::current_dir()?);
+            .unwrap_or(default_root()?);
         let data_dir = env::var("FAVORS_DATA_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| root.join("data"));
+        let web_dir = env::var("FAVORS_WEB_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| default_web_dir(&root));
 
         Ok(Self {
             item_dir: data_dir.join("items"),
             asset_dir: data_dir.join("assets"),
-            web_dir: root.join("apps/web/dist"),
-            extractor: root.join("apps/server/src/extract-worker.mjs"),
+            web_dir,
             root,
             data_dir,
             socket_activated,
@@ -170,6 +175,7 @@ impl App {
             200,
             json!({
                 "ok": true,
+                "root": self.root,
                 "dataDir": self.data_dir,
                 "webDistDir": self.web_dir,
                 "socketActivated": self.socket_activated,
@@ -241,7 +247,7 @@ impl App {
         let fetched = if source_type == "thread" {
             Extracted::default()
         } else {
-            run_extractor(&self.extractor, &self.root, &input).unwrap_or_default()
+            extract_remote(&input.url, &source_type).unwrap_or_default()
         };
         let item = build_item(&self.item_dir, input, fetched, source_type)?;
 
@@ -275,6 +281,34 @@ impl App {
         }
 
         Ok(json_response(404, json!({ "error": "Not found" })))
+    }
+}
+
+fn default_root() -> AppResult<PathBuf> {
+    let cwd = env::current_dir()?;
+    if cwd.join("apps/web/dist").is_dir() || cwd.join("web").is_dir() {
+        return Ok(cwd);
+    }
+
+    if let Ok(exe) = env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            if let Some(root) = bin_dir.parent() {
+                if root.join("web").is_dir() || root.join("apps/web/dist").is_dir() {
+                    return Ok(root.to_path_buf());
+                }
+            }
+        }
+    }
+
+    Ok(cwd)
+}
+
+fn default_web_dir(root: &Path) -> PathBuf {
+    let dev = root.join("apps/web/dist");
+    if dev.is_dir() {
+        dev
+    } else {
+        root.join("web")
     }
 }
 
@@ -985,30 +1019,272 @@ fn normalize_filter(value: &str) -> Option<String> {
     }
 }
 
-fn run_extractor(path: &Path, root: &Path, input: &SaveRequest) -> Option<Extracted> {
-    if !path.is_file() {
+fn extract_remote(raw_url: &str, source_type: &str) -> Option<Extracted> {
+    if source_type == "video" && is_youtube_url(raw_url) {
+        return fetch_youtube_oembed(raw_url);
+    }
+
+    if source_type != "article" {
         return None;
     }
 
-    let mut child = Command::new("node")
-        .arg(path)
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
+    let (content_type, html) = fetch_text(raw_url, "text/html,application/xhtml+xml")?;
+    if !content_type.to_ascii_lowercase().contains("text/html") {
+        return None;
+    }
+
+    Some(extract_html(raw_url, &html))
+}
+
+fn fetch_youtube_oembed(raw_url: &str) -> Option<Extracted> {
+    #[derive(Deserialize)]
+    struct Oembed {
+        title: Option<String>,
+        author_name: Option<String>,
+        provider_name: Option<String>,
+        thumbnail_url: Option<String>,
+    }
+
+    let endpoint = format!(
+        "https://www.youtube.com/oembed?format=json&url={}",
+        percent_encode(raw_url)
+    );
+    let (_, body) = fetch_text(&endpoint, "application/json")?;
+    let data: Oembed = serde_json::from_str(&body).ok()?;
+
+    Some(Extracted {
+        title: data.title,
+        author: data.author_name,
+        site_name: data.provider_name.or_else(|| Some("YouTube".to_string())),
+        description: None,
+        content_text: None,
+        thumbnail_url: data.thumbnail_url,
+        published_at: None,
+    })
+}
+
+fn fetch_text(raw_url: &str, accept: &str) -> Option<(String, String)> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(8)))
+        .build()
+        .into();
+    let mut response = agent
+        .get(raw_url)
+        .header("user-agent", USER_AGENT)
+        .header("accept", accept)
+        .call()
         .ok()?;
 
-    {
-        let stdin = child.stdin.as_mut()?;
-        let payload = serde_json::to_vec(input).ok()?;
-        stdin.write_all(&payload).ok()?;
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let body = response.body_mut().read_to_string().ok()?;
+    Some((content_type, body))
+}
+
+fn extract_html(raw_url: &str, html: &str) -> Extracted {
+    let document = Html::parse_document(html);
+    let readable = readable_text(raw_url, html);
+    let title = meta(&document, &["og:title"])
+        .or_else(|| {
+            readable
+                .as_ref()
+                .and_then(|item| empty_to_none(Some(item.0.as_str())))
+        })
+        .or_else(|| first_text(&document, &["title"]));
+    let content_text = readable
+        .as_ref()
+        .and_then(|item| empty_to_none(Some(item.1.as_str())))
+        .or_else(|| first_text(&document, &["article", "main", "body"]));
+
+    Extracted {
+        title,
+        author: meta(&document, &["author", "article:author"]),
+        site_name: meta(&document, &["og:site_name"]).or_else(|| host_name(raw_url)),
+        description: meta(&document, &["description", "og:description"]).or_else(|| {
+            content_text
+                .as_deref()
+                .map(first_sentence_block)
+                .map(str::to_string)
+        }),
+        content_text,
+        thumbnail_url: meta(&document, &["og:image", "twitter:image"]),
+        published_at: meta(&document, &["article:published_time", "date", "pubdate"]),
+    }
+}
+
+fn readable_text(raw_url: &str, html: &str) -> Option<(String, String)> {
+    let url = Url::parse(raw_url).ok()?;
+    let mut input = html.as_bytes();
+    let readable = extract_readable(&mut input, &url, ExtractOptions::default()).ok()?;
+    Some((
+        normalize_text(&readable.title),
+        normalize_text(&readable.text),
+    ))
+}
+
+fn meta(document: &Html, names: &[&str]) -> Option<String> {
+    for name in names {
+        for selector in [
+            format!(r#"meta[name="{name}"]"#),
+            format!(r#"meta[property="{name}"]"#),
+        ] {
+            let selector = Selector::parse(&selector).ok()?;
+            for node in document.select(&selector) {
+                if let Some(content) = node.value().attr("content") {
+                    let value = normalize_text(&decode_html_entities(content));
+                    if !value.is_empty() {
+                        return Some(value);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn first_text(document: &Html, selectors: &[&str]) -> Option<String> {
+    for selector in selectors {
+        let selector = Selector::parse(selector).ok()?;
+        for node in document.select(&selector) {
+            let value = normalize_text(&node.text().collect::<Vec<_>>().join(" "));
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn host_name(raw_url: &str) -> Option<String> {
+    let url = Url::parse(raw_url).ok()?;
+    Some(url.host_str()?.trim_start_matches("www.").to_string())
+}
+
+fn is_youtube_url(raw_url: &str) -> bool {
+    let Ok(url) = Url::parse(raw_url) else {
+        return false;
+    };
+    let host = url.host_str().unwrap_or("").trim_start_matches("www.");
+    host == "youtu.be" || host.ends_with("youtube.com")
+}
+
+fn percent_encode(value: &str) -> String {
+    percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(url: &str) -> SaveRequest {
+        SaveRequest {
+            url: url.to_string(),
+            title: None,
+            author: None,
+            site_name: None,
+            description: None,
+            published_at: None,
+            thumbnail_url: None,
+            source_type: None,
+            content_text: None,
+            selected_text: None,
+        }
     }
 
-    let output = child.wait_with_output().ok()?;
-    if !output.status.success() {
-        return None;
+    #[test]
+    fn canonicalize_removes_tracking_and_fragment() {
+        assert_eq!(
+            canonicalize("https://example.com/read?utm_source=x&keep=1&fbclid=y#section").unwrap(),
+            "https://example.com/read?keep=1"
+        );
+        assert_eq!(
+            canonicalize("https://example.com/read?utm_campaign=x#section").unwrap(),
+            "https://example.com/read"
+        );
     }
 
-    serde_json::from_slice(&output.stdout).ok()
+    #[test]
+    fn extract_html_reads_metadata_and_article_text() {
+        let html = r#"
+            <!doctype html>
+            <html>
+              <head>
+                <title>Fallback title</title>
+                <meta property="og:title" content="Saved &amp; Parsed">
+                <meta name="author" content="Ada">
+                <meta property="og:site_name" content="Example Journal">
+                <meta name="description" content="A concise summary.">
+                <meta property="og:image" content="https://example.com/card.png">
+                <meta property="article:published_time" content="2026-07-04T10:00:00Z">
+              </head>
+              <body>
+                <article>
+                  <h1>Saved &amp; Parsed</h1>
+                  <p>First paragraph with enough useful text.</p>
+                  <p>Second paragraph.</p>
+                </article>
+              </body>
+            </html>
+        "#;
+
+        let extracted = extract_html("https://example.com/read", html);
+        assert_eq!(extracted.title.as_deref(), Some("Saved & Parsed"));
+        assert_eq!(extracted.author.as_deref(), Some("Ada"));
+        assert_eq!(extracted.site_name.as_deref(), Some("Example Journal"));
+        assert_eq!(extracted.description.as_deref(), Some("A concise summary."));
+        assert_eq!(
+            extracted.thumbnail_url.as_deref(),
+            Some("https://example.com/card.png")
+        );
+        assert_eq!(
+            extracted.published_at.as_deref(),
+            Some("2026-07-04T10:00:00Z")
+        );
+        assert!(extracted
+            .content_text
+            .as_deref()
+            .unwrap_or("")
+            .contains("First paragraph"));
+    }
+
+    #[test]
+    fn build_item_prefers_selected_text_and_replaces_generic_youtube_title() {
+        let dir = env::temp_dir().join(format!("favors-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+
+        let selected = "selected text ".repeat(20);
+        let mut input = request("https://www.youtube.com/watch?v=abc123");
+        input.title = Some("YouTube".to_string());
+        input.source_type = Some("video".to_string());
+        input.selected_text = Some(selected.clone());
+
+        let item = build_item(
+            &dir,
+            input,
+            Extracted {
+                title: Some("Real video title".to_string()),
+                author: Some("Creator".to_string()),
+                site_name: Some("YouTube".to_string()),
+                description: None,
+                content_text: Some("fetched text ".repeat(20)),
+                thumbnail_url: Some("https://img.example/video.jpg".to_string()),
+                published_at: None,
+            },
+            "video".to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(item.title, "Real video title");
+        assert_eq!(item.author.as_deref(), Some("Creator"));
+        assert_eq!(item.content_text, selected.trim());
+        assert!(fs::read_to_string(&item.markdown_path)
+            .unwrap()
+            .contains("[Open Source](https://www.youtube.com/watch?v=abc123)"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

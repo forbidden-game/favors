@@ -22,30 +22,28 @@ Favors is a local-first Chrome extension and web library for saving articles, Tw
 ## Tech Stack
 
 - Chrome Manifest V3 extension
-- Rust local daemon (`favorsd`) for HTTP, SQLite, static files, and idle exit
-- systemd user socket activation on `127.0.0.1:8123`
+- Rust local daemon (`favorsd`) for HTTP, extraction, SQLite, static files, and idle exit
+- Linux systemd user socket activation on `127.0.0.1:8123`
+- macOS LaunchAgent and Windows user-login startup
 - SQLite + FTS5 for metadata and search
-- Node.js worker with Mozilla Readability + JSDOM for article extraction
 - React + Vite + TypeScript
 
 ## Install
 
-Requires Node.js 22+, Rust/Cargo, and a Linux user session with systemd.
+Use the release installer. It downloads the matching prebuilt package, installs it into your user profile, and registers the local daemon.
 
 ```bash
-npm install
-npm run build
-npm run install:socket
+./scripts/install.sh
 ```
 
 Open `http://127.0.0.1:8123`.
 
-The socket stays available while the daemon is stopped. systemd starts `favorsd` on the first request, and the daemon exits after 5 idle minutes.
+On Linux, the socket stays available while the daemon is stopped. systemd starts `favorsd` on the first request, and the daemon exits after 5 idle minutes.
 
-To remove the background socket:
+On Windows:
 
-```bash
-npm run uninstall:socket
+```powershell
+.\scripts\install.ps1
 ```
 
 ## Install The Chrome Extension
@@ -67,8 +65,11 @@ The extension posts to `http://127.0.0.1:8123/api/save`, so install the socket o
 
 ## Development
 
+Development requires Node.js 22+, Rust/Cargo, and SQLite development headers.
+
 ```bash
 npm install
+npm run build
 npm run dev:server
 npm run dev:web
 ```
@@ -78,8 +79,13 @@ Open `http://127.0.0.1:5173` for the Vite dev UI.
 For a foreground production run without systemd:
 
 ```bash
-npm run build
 npm start
+```
+
+To package the current build:
+
+```bash
+npm run package:release -- linux-x64
 ```
 
 ## Local Data

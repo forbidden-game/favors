@@ -35,14 +35,17 @@ Type=simple
 WorkingDirectory=$ROOT
 ExecStart=$BINARY
 Environment=FAVORS_ROOT=$ROOT
+Environment=FAVORS_WEB_DIR=$ROOT/apps/web/dist
+Environment=FAVORS_DATA_DIR=$ROOT/data
 Environment=FAVORS_IDLE_SECONDS=300
 NoNewPrivileges=true
 PrivateTmp=true
 UNIT
 
-systemctl --user daemon-reload
-systemctl --user enable --now favors.socket
 systemctl --user stop favors.service >/dev/null 2>&1 || true
+systemctl --user daemon-reload
+systemctl --user enable favors.socket >/dev/null
+systemctl --user restart favors.socket
 
 echo "Favors socket is active at http://127.0.0.1:8123"
 echo "Daemon will start on demand and exit after 300 idle seconds."

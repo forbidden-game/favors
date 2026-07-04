@@ -4,14 +4,17 @@
   "version": "0.1.0",
   "type": "module",
   "workspaces": [
-    "apps/server",
     "apps/web"
   ],
   "scripts": {
+    "build:web": "npm --workspace @favors/web run build",
+    "build:daemon": "cargo build --release --manifest-path apps/daemon/Cargo.toml",
     "dev:server": "cargo run --manifest-path apps/daemon/Cargo.toml",
     "dev:web": "npm --workspace @favors/web run dev",
-    "build": "npm --workspace @favors/web run build && cargo build --release --manifest-path apps/daemon/Cargo.toml",
+    "build": "npm run build:web && npm run build:daemon",
+    "package:release": "scripts/package-release.sh",
     "start": "./apps/daemon/target/release/favorsd",
+    "install:local": "scripts/install.sh",
     "install:socket": "scripts/install-systemd-user.sh",
     "uninstall:socket": "scripts/uninstall-systemd-user.sh"
   }
