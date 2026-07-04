@@ -46,15 +46,45 @@ On Windows:
 .\scripts\install.ps1
 ```
 
-## Install The Chrome Extension
+## Load The Chrome Extension From This Repo
 
-1. Open `chrome://extensions`.
-2. Enable **Developer mode**.
-3. Click **Load unpacked**.
-4. Select `apps/extension`.
-5. Click the Favors extension button on any page to save it.
+No Chrome Web Store upload or zip package is required for local use.
 
-The extension posts to `http://127.0.0.1:8123/api/save`, so install the socket or run the daemon manually.
+1. Install the local Favors service first:
+
+   ```bash
+   ./scripts/install.sh
+   ```
+
+   On Windows:
+
+   ```powershell
+   .\scripts\install.ps1
+   ```
+
+2. Open Chrome and go to `chrome://extensions`.
+3. Enable **Developer mode**.
+4. Click **Load unpacked**.
+5. Select this folder from the repo:
+
+   ```text
+   /path/to/favors/apps/extension
+   ```
+
+   On Windows, select:
+
+   ```text
+   C:\path\to\favors\apps\extension
+   ```
+
+   Select the folder that contains `manifest.json`. Do not select the repo root, `apps/`, or a zip file.
+
+6. Pin the Favors icon from Chrome's extensions menu.
+7. Open any article, X/Twitter thread, or YouTube video, then click the Favors icon to save it.
+
+After `git pull`, open `chrome://extensions` and click the reload button on the Favors extension card.
+
+The extension is plain Manifest V3 JavaScript and does not need `npm install` or a build step. It posts saved pages to the local service at `http://127.0.0.1:8123/api/save`.
 
 ## Usage
 
