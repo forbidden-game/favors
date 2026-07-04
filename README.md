@@ -6,6 +6,10 @@
 
 Favors is a local-first Chrome extension and web library for saving articles, Twitter/X threads, and YouTube videos with one click.
 
+<p align="center">
+  <img src="docs/library-preview.png" alt="Favors local saved-content library" />
+</p>
+
 ## Features
 
 - One-click save from Chrome.
