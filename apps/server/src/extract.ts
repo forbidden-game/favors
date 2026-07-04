@@ -15,7 +15,7 @@ export interface ExtractedContent {
 
 export async function extractContent(input: SaveRequest): Promise<ExtractedContent> {
   const sourceType = normalizeSourceType(input.sourceType) ?? inferSourceType(input.url);
-  const fetched = await fetchReadable(input.url, sourceType);
+  const fetched = sourceType === "video" ? await fetchVideoMetadata(input.url) : await fetchReadable(input.url, sourceType);
 
   const contentText = normalizeText(
     [input.selectedText, fetched?.textContent, input.contentText].find((value) => value && value.length > 120) ??
@@ -24,16 +24,16 @@ export async function extractContent(input: SaveRequest): Promise<ExtractedConte
       "",
   );
 
-  const description = normalizeText(input.description || fetched?.excerpt || firstSentenceBlock(contentText));
+  const description = chooseDescription(input.description, fetched?.excerpt, contentText, sourceType);
 
   return {
     sourceType,
-    title: cleanTitle(input.title || fetched?.title || input.url),
+    title: cleanTitle(chooseTitle(input.title, fetched?.title, input.url, sourceType)),
     author: emptyToNull(input.author || fetched?.byline),
     siteName: emptyToNull(input.siteName || fetched?.siteName || new URL(input.url).hostname),
     description,
     contentText,
-    thumbnailUrl: emptyToNull(input.thumbnailUrl || fetched?.image),
+    thumbnailUrl: emptyToNull(chooseThumbnail(input.thumbnailUrl, fetched?.image, sourceType)),
     publishedAt: emptyToNull(input.publishedAt),
   };
 }
@@ -51,6 +51,44 @@ function normalizeSourceType(value: unknown): SourceType | null {
   if (value === "blog") return "article";
   if (value === "article" || value === "thread" || value === "video" || value === "other") return value;
   return null;
+}
+
+function chooseTitle(inputTitle: string | undefined, fetchedTitle: string | undefined, fallback: string, sourceType: SourceType) {
+  if (isGenericTitle(inputTitle, sourceType) && fetchedTitle) return fetchedTitle;
+  return inputTitle || fetchedTitle || fallback;
+}
+
+function chooseDescription(
+  inputDescription: string | undefined,
+  fetchedDescription: string | undefined,
+  contentText: string,
+  sourceType: SourceType,
+) {
+  if (!isGenericDescription(inputDescription, sourceType)) {
+    return normalizeText(inputDescription || fetchedDescription || firstSentenceBlock(contentText));
+  }
+
+  return normalizeText(fetchedDescription || firstSentenceBlock(contentText));
+}
+
+function chooseThumbnail(inputImage: string | undefined, fetchedImage: string | undefined, sourceType: SourceType) {
+  if (isGenericThumbnail(inputImage, sourceType) && fetchedImage) return fetchedImage;
+  return inputImage || fetchedImage;
+}
+
+function isGenericTitle(value: string | undefined, sourceType: SourceType) {
+  return sourceType === "video" && (!value || ["youtube", "youtube music"].includes(value.trim().toLowerCase()));
+}
+
+function isGenericDescription(value: string | undefined, sourceType: SourceType) {
+  if (sourceType !== "video" || !value) return false;
+  return /YouTube 上畅享你喜爱的视频|Enjoy the videos and music you love|上传原创内容|upload original content/i.test(
+    value,
+  );
+}
+
+function isGenericThumbnail(value: string | undefined, sourceType: SourceType) {
+  return sourceType === "video" && Boolean(value?.includes("/img/desktop/yt_"));
 }
 
 function cleanTitle(value: string) {
@@ -105,6 +143,43 @@ async function fetchReadable(rawUrl: string, sourceType: SourceType) {
   } catch {
     return null;
   }
+}
+
+async function fetchVideoMetadata(rawUrl: string) {
+  if (!isYouTubeUrl(rawUrl)) return null;
+
+  try {
+    const endpoint = `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(rawUrl)}`;
+    const response = await fetch(endpoint, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (!response.ok) return null;
+
+    const data = (await response.json()) as {
+      title?: string;
+      author_name?: string;
+      provider_name?: string;
+      thumbnail_url?: string;
+    };
+
+    return {
+      title: data.title ?? "",
+      byline: data.author_name ?? "",
+      excerpt: "",
+      textContent: "",
+      siteName: data.provider_name ?? "YouTube",
+      image: data.thumbnail_url ?? "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isYouTubeUrl(rawUrl: string) {
+  const host = new URL(rawUrl).hostname.replace(/^www\./, "");
+  return host === "youtu.be" || host.endsWith("youtube.com");
 }
 
 function meta(doc: Document, name: string) {
