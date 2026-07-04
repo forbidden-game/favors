@@ -1,0 +1,17 @@
+{
+  "name": "favors",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/server",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev:server": "npm --workspace @favors/server run dev",
+    "dev:web": "npm --workspace @favors/web run dev",
+    "build": "npm --workspace @favors/web run build && npm --workspace @favors/server run build",
+    "start": "npm --workspace @favors/server run start"
+  }
+}
+
