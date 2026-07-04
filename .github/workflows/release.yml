@@ -83,5 +83,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes "Favors release $TAG"
-          gh release upload "$TAG" dist/* --clobber
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "Favors release $TAG"
+          gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
